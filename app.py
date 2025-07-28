@@ -114,9 +114,6 @@ def create_row_data(input_data: str) -> Dict[str, Any]:
     """
     Create standardized row data structure for backend requests.
     
-    This function analyzes the input and places it in the appropriate field
-    based on URL patterns and content analysis.
-    
     Args:
         input_data: The input string to analyze
         
@@ -147,13 +144,10 @@ def create_row_data(input_data: str) -> Dict[str, Any]:
         elif "huggingface.co/datasets" in input_data:
             row_data["Dataset"] = input_data
         elif "huggingface.co/" in input_data:
-            # Likely a model URL (huggingface.co/org/model-name)
             row_data["Model"] = input_data
         else:
-            # Unknown URL type - try as paper
             row_data["Paper"] = input_data
     else:
-        # Non-URL input - likely a paper title or project name
         row_data["Name"] = input_data
     
     return row_data
@@ -233,44 +227,19 @@ def infer_paper_url(input_data: str) -> str:
     """
     Infer the paper URL from various research-related inputs.
     
-    This function attempts to find the associated research paper from
-    inputs like GitHub repositories, project pages, or partial URLs.
-    
     Args:
         input_data: A URL, repository link, or other research-related input
         
     Returns:
         The paper URL (typically arXiv or Hugging Face papers), or empty string if not found
-        
-    Examples:
-        >>> infer_paper_url("https://github.com/google-research/vision_transformer")
-        "https://arxiv.org/abs/2010.11929"
-        
-        >>> infer_paper_url("Vision Transformer")
-        "https://arxiv.org/abs/2010.11929"
     """
     if not input_data or not input_data.strip():
         return ""
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": input_data if not input_data.startswith("http") else None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-paper", row_data)
-        
-        # Extract paper URL from response
-        paper_url = result.get("paper", "")
-        return paper_url if paper_url else ""
+        return result.get("paper", "")
         
     except Exception as e:
         logger.error(f"Error inferring paper: {e}")
@@ -281,44 +250,19 @@ def infer_code_repository(input_data: str) -> str:
     """
     Infer the code repository URL from research-related inputs.
     
-    This function attempts to find the associated code repository from
-    inputs like paper URLs, project pages, or partial information.
-    
     Args:
         input_data: A URL, paper link, or other research-related input
         
     Returns:
         The code repository URL (typically GitHub), or empty string if not found
-        
-    Examples:
-        >>> infer_code_repository("https://arxiv.org/abs/2010.11929")
-        "https://github.com/google-research/vision_transformer"
-        
-        >>> infer_code_repository("Vision Transformer")
-        "https://github.com/google-research/vision_transformer"
     """
     if not input_data or not input_data.strip():
         return ""
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": input_data if not input_data.startswith("http") else None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-code", row_data)
-        
-        # Extract code URL from response
-        code_url = result.get("code", "")
-        return code_url if code_url else ""
+        return result.get("code", "")
         
     except Exception as e:
         logger.error(f"Error inferring code: {e}")
@@ -329,44 +273,19 @@ def infer_research_name(input_data: str) -> str:
     """
     Infer the research paper or project name from various inputs.
     
-    This function attempts to extract the formal name/title of a research
-    paper or project from URLs, repositories, or partial information.
-    
     Args:
         input_data: A URL, repository link, or other research-related input
         
     Returns:
         The research name/title, or empty string if not found
-        
-    Examples:
-        >>> infer_research_name("https://arxiv.org/abs/2010.11929")
-        "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale"
-        
-        >>> infer_research_name("https://github.com/google-research/vision_transformer")
-        "Vision Transformer"
     """
     if not input_data or not input_data.strip():
         return ""
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-name", row_data)
-        
-        # Extract name from response
-        name = result.get("name", "")
-        return name if name else ""
+        return result.get("name", "")
         
     except Exception as e:
         logger.error(f"Error inferring name: {e}")
@@ -416,46 +335,21 @@ def infer_organizations(input_data: str) -> List[str]:
     """
     Infer affiliated organizations from research paper or project information.
     
-    This function attempts to extract organization names from research metadata,
-    author affiliations, and repository information. It uses NLP analysis to
-    identify institutional affiliations from paper authors and project contributors.
-    
     Args:
         input_data: A URL, paper title, or other research-related input
         
     Returns:
         A list of organization names, or empty list if no organizations found
-        
-    Examples:
-        >>> infer_organizations("https://arxiv.org/abs/2010.11929")
-        ["Google Research", "University of Amsterdam", "ETH Zurich"]
-        
-        >>> infer_organizations("https://github.com/openai/gpt-2")
-        ["OpenAI"]
     """
     if not input_data or not input_data.strip():
         return []
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": input_data if not input_data.startswith("http") else None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-orgs", row_data)
         
-        # Extract organizations from response
         orgs = result.get("orgs", [])
         if isinstance(orgs, str):
-            # Handle comma-separated string format
             orgs = [org.strip() for org in orgs.split(",") if org.strip()]
         elif not isinstance(orgs, list):
             orgs = []
@@ -471,45 +365,19 @@ def infer_publication_date(input_data: str) -> str:
     """
     Infer publication date from research paper or project information.
     
-    This function attempts to extract publication dates from paper metadata,
-    repository creation dates, or release information. Returns dates in
-    standardized format (YYYY-MM-DD) when possible.
-    
     Args:
         input_data: A URL, paper title, or other research-related input
         
     Returns:
         Publication date as string (YYYY-MM-DD format), or empty string if not found
-        
-    Examples:
-        >>> infer_publication_date("https://arxiv.org/abs/2010.11929")
-        "2020-10-22"
-        
-        >>> infer_publication_date("https://github.com/google-research/vision_transformer")
-        "2020-10-22"
     """
     if not input_data or not input_data.strip():
         return ""
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": input_data if not input_data.startswith("http") else None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-date", row_data)
-        
-        # Extract date from response
-        date = result.get("date", "")
-        return date if date else ""
+        return result.get("date", "")
         
     except Exception as e:
         logger.error(f"Error inferring publication date: {e}")
@@ -520,45 +388,19 @@ def infer_model(input_data: str) -> str:
     """
     Infer associated HuggingFace model from research paper or project information.
     
-    This function attempts to find HuggingFace models associated with research
-    papers, GitHub repositories, or project pages. It searches for model
-    references in papers, README files, and related documentation.
-    
     Args:
         input_data: A URL, paper title, or other research-related input
         
     Returns:
         HuggingFace model URL, or empty string if no model found
-        
-    Examples:
-        >>> infer_model("https://arxiv.org/abs/2010.11929")
-        "https://huggingface.co/google/vit-base-patch16-224"
-        
-        >>> infer_model("Vision Transformer")
-        "https://huggingface.co/google/vit-base-patch16-224"
     """
     if not input_data or not input_data.strip():
         return ""
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": input_data if not input_data.startswith("http") else None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-model", row_data)
-        
-        # Extract model URL from response
-        model = result.get("model", "")
-        return model if model else ""
+        return result.get("model", "")
         
     except Exception as e:
         logger.error(f"Error inferring model: {e}")
@@ -569,45 +411,19 @@ def infer_dataset(input_data: str) -> str:
     """
     Infer associated HuggingFace dataset from research paper or project information.
     
-    This function attempts to find HuggingFace datasets used or created by
-    research papers, GitHub repositories, or projects. It analyzes paper
-    content, repository documentation, and project descriptions.
-    
     Args:
         input_data: A URL, paper title, or other research-related input
         
     Returns:
         HuggingFace dataset URL, or empty string if no dataset found
-        
-    Examples:
-        >>> infer_dataset("https://arxiv.org/abs/1706.03762")
-        "https://huggingface.co/datasets/wmt14"
-        
-        >>> infer_dataset("https://github.com/huggingface/transformers")
-        "https://huggingface.co/datasets/glue"
     """
     if not input_data or not input_data.strip():
         return ""
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": input_data if not input_data.startswith("http") else None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-dataset", row_data)
-        
-        # Extract dataset URL from response
-        dataset = result.get("dataset", "")
-        return dataset if dataset else ""
+        return result.get("dataset", "")
         
     except Exception as e:
         logger.error(f"Error inferring dataset: {e}")
@@ -618,45 +434,19 @@ def infer_space(input_data: str) -> str:
     """
     Infer associated HuggingFace space from research paper or project information.
     
-    This function attempts to find HuggingFace spaces (demos/applications) 
-    associated with research papers, models, or GitHub repositories. It looks
-    for interactive demos and applications built around research.
-    
     Args:
         input_data: A URL, paper title, or other research-related input
         
     Returns:
         HuggingFace space URL, or empty string if no space found
-        
-    Examples:
-        >>> infer_space("https://huggingface.co/google/vit-base-patch16-224")
-        "https://huggingface.co/spaces/google/vit-demo"
-        
-        >>> infer_space("https://arxiv.org/abs/2010.11929")
-        "https://huggingface.co/spaces/google/vision-transformer-demo"
     """
     if not input_data or not input_data.strip():
         return ""
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": input_data if not input_data.startswith("http") else None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-space", row_data)
-        
-        # Extract space URL from response
-        space = result.get("space", "")
-        return space if space else ""
+        return result.get("space", "")
         
     except Exception as e:
         logger.error(f"Error inferring space: {e}")
@@ -667,45 +457,19 @@ def infer_license(input_data: str) -> str:
     """
     Infer license information from research repository or project.
     
-    This function attempts to extract license information from GitHub
-    repositories, project documentation, or associated code. It checks
-    license files, repository metadata, and project descriptions.
-    
     Args:
         input_data: A URL, repository link, or other research-related input
         
     Returns:
         License name/type, or empty string if no license found
-        
-    Examples:
-        >>> infer_license("https://github.com/google-research/vision_transformer")
-        "Apache License 2.0"
-        
-        >>> infer_license("https://github.com/openai/gpt-2")
-        "MIT License"
     """
     if not input_data or not input_data.strip():
         return ""
     
     try:
-        # Create row data structure
-        row_data = {
-            "Name": input_data if not input_data.startswith("http") else None,
-            "Authors": [],
-            "Paper": input_data if "arxiv" in input_data or "huggingface.co/papers" in input_data else None,
-            "Code": input_data if "github.com" in input_data else None,
-            "Project": input_data if "github.io" in input_data else None,
-            "Space": input_data if "huggingface.co/spaces" in input_data else None,
-            "Model": input_data if "huggingface.co/models" in input_data else None,
-            "Dataset": input_data if "huggingface.co/datasets" in input_data else None,
-        }
-        
-        # Call the backend
+        row_data = create_row_data(input_data.strip())
         result = make_backend_request("infer-license", row_data)
-        
-        # Extract license from response
-        license_info = result.get("license", "")
-        return license_info if license_info else ""
+        return result.get("license", "")
         
     except Exception as e:
         logger.error(f"Error inferring license: {e}")
