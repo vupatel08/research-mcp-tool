@@ -1235,7 +1235,6 @@ with gr.Blocks(title="Research Tracker MCP Server") as demo:
             ["https://arxiv.org/abs/2506.18787"],
             ["https://huggingface.co/papers/2010.11929"],
             ["https://github.com/facebookresearch/segment-anything"],
-            ["Attention Is All You Need"]
         ],
         inputs=[input_text],
         outputs=[
