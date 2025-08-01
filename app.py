@@ -24,9 +24,7 @@ from typing import List, Dict, Any, Optional
 import gradio as gr
 import requests
 import feedparser
-import spacy
 from bs4 import BeautifulSoup
-from fuzzywuzzy import fuzz
 
 # Configure logging
 logging.basicConfig(
@@ -45,9 +43,6 @@ GITHUB_AUTH = os.environ.get("GITHUB_AUTH")
 if not HF_TOKEN:
     logger.warning("HF_TOKEN not found in environment variables")
 
-# Global spaCy model (loaded lazily)
-nlp = None
-
 
 # Utility functions
 def get_arxiv_id(paper_url: str) -> Optional[str]:
@@ -65,6 +60,60 @@ def extract_links_from_soup(soup, text):
     link_pattern = re.compile(r"\[.*?\]\((.*?)\)")
     markdown_links = link_pattern.findall(text)
     return html_links + markdown_links
+
+
+def scrape_huggingface_paper_page(paper_url: str) -> Dict[str, Any]:
+    """
+    Scrape HuggingFace paper page to find associated resources
+    
+    Returns:
+        Dict containing found resources: {
+            "models": [], "datasets": [], "spaces": [], "code": []
+        }
+    """
+    resources = {"models": [], "datasets": [], "spaces": [], "code": []}
+    
+    if not paper_url or "huggingface.co/papers" not in paper_url:
+        return resources
+    
+    try:
+        r = requests.get(paper_url, timeout=REQUEST_TIMEOUT)
+        if r.status_code != 200:
+            return resources
+            
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        # Find all links on the page
+        links = []
+        for link in soup.find_all("a"):
+            href = link.get("href")
+            if href:
+                # Convert relative URLs to absolute
+                if href.startswith("/"):
+                    href = "https://huggingface.co" + href
+                elif href.startswith("huggingface.co"):
+                    href = "https://" + href
+                links.append(href)
+        
+        # Categorize links
+        for link in links:
+            if "huggingface.co/" in link:
+                if "/models/" in link and link not in resources["models"]:
+                    resources["models"].append(link)
+                elif "/datasets/" in link and link not in resources["datasets"]:
+                    resources["datasets"].append(link)
+                elif "/spaces/" in link and link not in resources["spaces"]:
+                    resources["spaces"].append(link)
+            elif "github.com" in link and link not in resources["code"]:
+                resources["code"].append(link)
+        
+        logger.info(f"Found {len(resources['models'])} models, {len(resources['datasets'])} datasets, "
+                   f"{len(resources['spaces'])} spaces, {len(resources['code'])} code repos from HF paper page")
+        
+    except Exception as e:
+        logger.warning(f"Failed to scrape HuggingFace paper page {paper_url}: {e}")
+    
+    return resources
 
 
 def create_row_data(input_data: str) -> Dict[str, Any]:
@@ -112,10 +161,25 @@ def infer_paper_from_row(row_data: Dict[str, Any]) -> Optional[str]:
         try:
             url = urlparse(row_data["Paper"])
             if url.scheme in ["http", "https"]:
+                # Convert arXiv PDF to abs format
                 if "arxiv.org/pdf/" in row_data["Paper"]:
                     new_url = row_data["Paper"].replace("/pdf/", "/abs/").replace(".pdf", "")
                     logger.info(f"Paper {new_url} inferred from {row_data['Paper']}")
                     return new_url
+                
+                # If this is an arXiv URL, try HuggingFace papers first for better resource discovery
+                if "arxiv.org/abs/" in row_data["Paper"]:
+                    arxiv_id = row_data["Paper"].split("arxiv.org/abs/")[1]
+                    hf_paper_url = f"https://huggingface.co/papers/{arxiv_id}"
+                    try:
+                        # Test if HuggingFace paper page exists and has content
+                        r = requests.get(hf_paper_url, timeout=10)
+                        if r.status_code == 200 and len(r.text) > 1000:  # Basic check for content
+                            logger.info(f"Paper {hf_paper_url} inferred from arXiv (HuggingFace preferred)")
+                            return hf_paper_url
+                    except Exception:
+                        pass  # Fall back to original arXiv URL
+                
                 return row_data["Paper"]
         except Exception:
             pass
@@ -246,7 +310,28 @@ def infer_code_from_row(row_data: Dict[str, Any]) -> Optional[str]:
         except Exception:
             pass
 
-    # Try GitHub search for papers
+    # Try scraping HuggingFace paper page for code links
+    if row_data.get("Paper") is not None:
+        arxiv_id = get_arxiv_id(row_data["Paper"])
+        
+        # Try scraping HuggingFace paper page
+        if "huggingface.co/papers" in row_data["Paper"]:
+            resources = scrape_huggingface_paper_page(row_data["Paper"])
+            if resources["code"]:
+                code_url = resources["code"][0]  # Take first code repo found
+                logger.info(f"Code {code_url} inferred from HuggingFace paper page")
+                return code_url
+        
+        # If we have arXiv URL, try the HuggingFace version first
+        elif "arxiv.org/abs/" in row_data["Paper"] and arxiv_id:
+            hf_paper_url = f"https://huggingface.co/papers/{arxiv_id}"
+            resources = scrape_huggingface_paper_page(hf_paper_url)
+            if resources["code"]:
+                code_url = resources["code"][0]
+                logger.info(f"Code {code_url} inferred from HuggingFace paper page (via arXiv)")
+                return code_url
+
+    # Fallback: Try GitHub search for papers
     if row_data.get("Paper") is not None and "arxiv.org" in row_data["Paper"] and GITHUB_AUTH:
         try:
             arxiv_id = get_arxiv_id(row_data["Paper"])
@@ -327,10 +412,29 @@ def infer_model_from_row(row_data: Dict[str, Any]) -> Optional[str]:
 
     if row_data.get("Paper") is not None:
         arxiv_id = get_arxiv_id(row_data["Paper"])
+        
+        # First check known mappings
         if arxiv_id is not None and arxiv_id in known_model_mappings:
             model_url = known_model_mappings[arxiv_id]
             logger.info(f"Model {model_url} inferred from Paper (known mapping)")
             return model_url
+        
+        # Try scraping HuggingFace paper page
+        if "huggingface.co/papers" in row_data["Paper"]:
+            resources = scrape_huggingface_paper_page(row_data["Paper"])
+            if resources["models"]:
+                model_url = resources["models"][0]  # Take first model found
+                logger.info(f"Model {model_url} inferred from HuggingFace paper page")
+                return model_url
+        
+        # If we have arXiv URL, try the HuggingFace version
+        elif "arxiv.org/abs/" in row_data["Paper"] and arxiv_id:
+            hf_paper_url = f"https://huggingface.co/papers/{arxiv_id}"
+            resources = scrape_huggingface_paper_page(hf_paper_url)
+            if resources["models"]:
+                model_url = resources["models"][0]
+                logger.info(f"Model {model_url} inferred from HuggingFace paper page (via arXiv)")
+                return model_url
     
     return None
 
@@ -347,16 +451,57 @@ def infer_dataset_from_row(row_data: Dict[str, Any]) -> Optional[str]:
 
     if row_data.get("Paper") is not None:
         arxiv_id = get_arxiv_id(row_data["Paper"])
+        
+        # First check known mappings
         if arxiv_id is not None and arxiv_id in known_dataset_mappings:
             dataset_url = known_dataset_mappings[arxiv_id]
             logger.info(f"Dataset {dataset_url} inferred from Paper (known mapping)")
             return dataset_url
+        
+        # Try scraping HuggingFace paper page
+        if "huggingface.co/papers" in row_data["Paper"]:
+            resources = scrape_huggingface_paper_page(row_data["Paper"])
+            if resources["datasets"]:
+                dataset_url = resources["datasets"][0]  # Take first dataset found
+                logger.info(f"Dataset {dataset_url} inferred from HuggingFace paper page")
+                return dataset_url
+        
+        # If we have arXiv URL, try the HuggingFace version
+        elif "arxiv.org/abs/" in row_data["Paper"] and arxiv_id:
+            hf_paper_url = f"https://huggingface.co/papers/{arxiv_id}"
+            resources = scrape_huggingface_paper_page(hf_paper_url)
+            if resources["datasets"]:
+                dataset_url = resources["datasets"][0]
+                logger.info(f"Dataset {dataset_url} inferred from HuggingFace paper page (via arXiv)")
+                return dataset_url
     
     return None
 
 
 def infer_space_from_row(row_data: Dict[str, Any]) -> Optional[str]:
     """Infer HuggingFace space from row data"""
+    # Try scraping HuggingFace paper page first (most reliable)
+    if row_data.get("Paper") is not None:
+        arxiv_id = get_arxiv_id(row_data["Paper"])
+        
+        # Try scraping HuggingFace paper page
+        if "huggingface.co/papers" in row_data["Paper"]:
+            resources = scrape_huggingface_paper_page(row_data["Paper"])
+            if resources["spaces"]:
+                space_url = resources["spaces"][0]  # Take first space found
+                logger.info(f"Space {space_url} inferred from HuggingFace paper page")
+                return space_url
+        
+        # If we have arXiv URL, try the HuggingFace version
+        elif "arxiv.org/abs/" in row_data["Paper"] and arxiv_id:
+            hf_paper_url = f"https://huggingface.co/papers/{arxiv_id}"
+            resources = scrape_huggingface_paper_page(hf_paper_url)
+            if resources["spaces"]:
+                space_url = resources["spaces"][0]
+                logger.info(f"Space {space_url} inferred from HuggingFace paper page (via arXiv)")
+                return space_url
+    
+    # Fallback: try to infer from model
     if row_data.get("Model") is not None:
         try:
             model_id = row_data["Model"].split("huggingface.co/")[1]
@@ -393,36 +538,6 @@ def infer_license_from_row(row_data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def infer_orgs_from_row(row_data: Dict[str, Any]) -> List[str]:
-    """Infer organizations from row data"""
-    global nlp
-    if nlp is None:
-        try:
-            nlp = spacy.load("en_core_web_sm")
-        except OSError as e:
-            logger.warning(f"Could not load spaCy model 'en_core_web_sm': {e}")
-            return row_data.get("Orgs", [])
-    
-    orgs_input = row_data.get("Orgs", [])
-    if not orgs_input or not isinstance(orgs_input, list):
-        return []
-    
-    orgs = []
-    for org in orgs_input:
-        if not org or not isinstance(org, str):
-            continue
-        doc = nlp(org)
-        for ent in doc.ents:
-            if ent.label_ == "ORG":
-                if ent.text == org and ent.text not in orgs:
-                    orgs.append(ent.text)
-                    break
-                if fuzz.ratio(ent.text, org) > 80 and ent.text not in orgs:
-                    orgs.append(ent.text)
-                    logger.info(f"Org {ent.text} inferred from {org}")
-                    break
-
-    return orgs
 
 
 def infer_field_type(value: str) -> str:
@@ -575,27 +690,6 @@ def classify_research_url(input_data: str) -> str:
         return "Unknown"
 
 
-def infer_organizations(input_data: str) -> List[str]:
-    """
-    Infer affiliated organizations from research paper or project information.
-    
-    Args:
-        input_data (str): A URL, paper title, or other research-related input
-        
-    Returns:
-        List[str]: A list of organization names, or empty list if no organizations found
-    """
-    if not input_data or not input_data.strip():
-        return []
-    
-    try:
-        row_data = create_row_data(input_data.strip())
-        orgs = infer_orgs_from_row(row_data)
-        return orgs if isinstance(orgs, list) else []
-        
-    except Exception as e:
-        logger.error(f"Error inferring organizations: {e}")
-        return []
 
 
 def infer_publication_date(input_data: str) -> str:
@@ -734,7 +828,6 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
             "code": None,
             "name": None,
             "authors": [],
-            "organizations": [],
             "date": None,
             "model": None,
             "dataset": None,
@@ -742,7 +835,7 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
             "license": None,
             "field_type": None,
             "success_count": 0,
-            "total_inferences": 11
+            "total_inferences": 10
         }
         
         inferences = [
@@ -750,7 +843,6 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
             ("code", infer_code_repository),
             ("name", infer_research_name),
             ("authors", infer_authors),
-            ("organizations", infer_organizations),
             ("date", infer_publication_date),
             ("model", infer_model),
             ("dataset", infer_dataset),
@@ -783,33 +875,102 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
         return {"error": str(e), "success_count": 0, "total_inferences": 0}
 
 
-# Create minimal Gradio interface focused on MCP tool exposure
+def format_list_output(items):
+    """Format list items for display"""
+    if not items or not isinstance(items, list):
+        return "None"
+    return "\n".join([f"• {item}" for item in items])
+
+def process_research_relationships(input_data):
+    """Process research input and return formatted results"""
+    if not input_data or not input_data.strip():
+        return "Please enter a valid URL or research name", "", "", "", "", "", "", "", "", ""
+    
+    try:
+        result = find_research_relationships(input_data.strip())
+        
+        # Extract individual fields with fallback to empty string
+        paper = result.get("paper", "") or ""
+        code = result.get("code", "") or ""
+        name = result.get("name", "") or ""
+        authors = format_list_output(result.get("authors", []))
+        date = result.get("date", "") or ""
+        model = result.get("model", "") or ""
+        dataset = result.get("dataset", "") or ""
+        space = result.get("space", "") or ""
+        license_info = result.get("license", "") or ""
+        field_type = result.get("field_type", "") or ""
+        
+        return paper, code, name, authors, date, model, dataset, space, license_info, field_type
+        
+    except Exception as e:
+        error_msg = f"Error processing input: {str(e)}"
+        return error_msg, "", "", "", "", "", "", "", "", ""
+
+# Create Gradio interface with both UI and MCP tool exposure
 with gr.Blocks(title="Research Tracker MCP Server") as demo:
-    gr.Markdown("# Research Tracker MCP Server")
+    gr.Markdown("# Research Tracker - Find Research Relationships")
     gr.Markdown("""
-    This server provides MCP tools for research inference and metadata extraction.
+    Enter a research paper URL, GitHub repository, or research name to discover all related resources across platforms.
     
-    **Available MCP Tools:**
-    - `infer_authors` - Extract author names from papers and repositories
-    - `infer_paper_url` - Find associated research paper URLs
-    - `infer_code_repository` - Discover code repository links
-    - `infer_research_name` - Extract research project names
-    - `classify_research_url` - Classify URL types (paper/code/model/etc.)
-    - `infer_organizations` - Identify affiliated organizations
-    - `infer_publication_date` - Extract publication dates
-    - `infer_model` - Find associated HuggingFace models
-    - `infer_dataset` - Find associated HuggingFace datasets
-    - `infer_space` - Find associated HuggingFace spaces
-    - `infer_license` - Extract license information
-    - `find_research_relationships` - Comprehensive research ecosystem analysis
-    
-    **Input Support:**
-    - arXiv paper URLs (https://arxiv.org/abs/...)
+    **Supported inputs:**
+    - arXiv paper URLs (https://arxiv.org/abs/...) - automatically checks HuggingFace papers first
+    - HuggingFace paper URLs (https://huggingface.co/papers/...) - preferred for better resource discovery
     - GitHub repository URLs (https://github.com/...)
     - HuggingFace model/dataset/space URLs
     - Research paper titles and project names
     - Project page URLs
     """)
+    
+    with gr.Row():
+        with gr.Column():
+            input_text = gr.Textbox(
+                label="Paper URL, Repository URL, or Research Name",
+                placeholder="https://arxiv.org/abs/2506.18787",
+                lines=2
+            )
+            submit_btn = gr.Button("Find Research Relationships", variant="primary")
+    
+    gr.Markdown("## Research Relationships")
+    
+    with gr.Row():
+        with gr.Column():
+            paper_output = gr.Textbox(label="Paper URL", interactive=False)
+            code_output = gr.Textbox(label="Code Repository", interactive=False)
+            name_output = gr.Textbox(label="Research Name", interactive=False)
+            authors_output = gr.Textbox(label="Authors", lines=3, interactive=False)
+            
+        with gr.Column():
+            date_output = gr.Textbox(label="Publication Date", interactive=False)
+            model_output = gr.Textbox(label="HuggingFace Model", interactive=False)
+            dataset_output = gr.Textbox(label="HuggingFace Dataset", interactive=False)
+            
+        with gr.Column():
+            space_output = gr.Textbox(label="HuggingFace Space", interactive=False)
+            license_output = gr.Textbox(label="License", interactive=False)
+            field_type_output = gr.Textbox(label="Field Type", interactive=False)
+    
+    # Connect the interface
+    submit_btn.click(
+        fn=process_research_relationships,
+        inputs=[input_text],
+        outputs=[
+            paper_output, code_output, name_output, authors_output, 
+            date_output, model_output, dataset_output,
+            space_output, license_output, field_type_output
+        ]
+    )
+    
+    # Also trigger on Enter key
+    input_text.submit(
+        fn=process_research_relationships,
+        inputs=[input_text],
+        outputs=[
+            paper_output, code_output, name_output, authors_output, 
+            date_output, model_output, dataset_output,
+            space_output, license_output, field_type_output
+        ]
+    )
     
     # Expose all core functions as MCP tools
     gr.api(infer_authors)
@@ -817,7 +978,6 @@ with gr.Blocks(title="Research Tracker MCP Server") as demo:
     gr.api(infer_code_repository)
     gr.api(infer_research_name)
     gr.api(classify_research_url)
-    gr.api(infer_organizations)
     gr.api(infer_publication_date)
     gr.api(infer_model)
     gr.api(infer_dataset)
