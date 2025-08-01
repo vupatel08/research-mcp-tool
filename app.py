@@ -55,7 +55,8 @@ ALLOWED_DOMAINS = {
     "arxiv.org",
     "huggingface.co",
     "github.com",
-    "github.io"
+    "github.io",
+    "raw.githubusercontent.com"
 }
 
 if not HF_TOKEN:
@@ -211,7 +212,14 @@ def extract_links_from_soup(soup, text):
     html_links = [link.get("href") for link in soup.find_all("a") if link.get("href")]
     link_pattern = re.compile(r"\[.*?\]\((.*?)\)")
     markdown_links = link_pattern.findall(text)
-    return html_links + markdown_links
+    
+    # Also extract direct URLs that aren't in markdown format
+    url_pattern = re.compile(r'https?://[^\s\)]+')
+    direct_urls = url_pattern.findall(text)
+    
+    # Combine all links and remove duplicates
+    all_links = html_links + markdown_links + direct_urls
+    return list(set(all_links))
 
 
 def scrape_huggingface_paper_page(paper_url: str) -> Dict[str, Any]:
@@ -369,22 +377,39 @@ def infer_paper_from_row(row_data: Dict[str, Any]) -> Optional[str]:
             logger.debug(f"Failed to scrape project page: {e}")
 
     # Try GitHub README parsing
-    if row_data.get("Code") is not None and GITHUB_AUTH and "github.com" in row_data["Code"]:
+    if row_data.get("Code") is not None and "github.com" in row_data["Code"]:
         try:
             repo = row_data["Code"].split("github.com/")[1]
-            # GitHub API requires special handling
-            r = make_github_request(f"/repos/{repo}/readme")
-            if r:
-                readme = r.json()
-                if readme.get("type") == "file" and readme.get("download_url"):
-                    response = cached_request(readme["download_url"])
-                    if response:
-                        soup = BeautifulSoup(response.text, "html.parser")
-                links = extract_links_from_soup(soup, r.text)
-                for link in links:
-                    if link and ("arxiv" in link or "huggingface.co/papers" in link):
-                        logger.info(f"Paper {link} inferred from Code")
-                        return link
+            
+            # First try with GitHub API if available
+            if GITHUB_AUTH:
+                readme_response = make_github_request(f"/repos/{repo}/readme")
+                if readme_response:
+                    readme = readme_response.json()
+                    if readme.get("type") == "file" and readme.get("download_url"):
+                        response = cached_request(readme["download_url"])
+                        if response:
+                            soup = BeautifulSoup(response.text, "html.parser")
+                            links = extract_links_from_soup(soup, response.text)
+                            for link in links:
+                                if link and ("arxiv" in link or "huggingface.co/papers" in link):
+                                    logger.info(f"Paper {link} inferred from Code (via GitHub API)")
+                                    return link
+            
+            # Fallback: try scraping the GitHub page directly
+            try:
+                github_url = row_data["Code"]
+                response = cached_request(github_url)
+                if response:
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    links = extract_links_from_soup(soup, response.text)
+                    for link in links:
+                        if link and ("arxiv" in link or "huggingface.co/papers" in link):
+                            logger.info(f"Paper {link} inferred from Code (via GitHub scraping)")
+                            return link
+            except (ValidationError, ExternalAPIError):
+                pass
+                
         except Exception:
             pass
     
@@ -717,7 +742,7 @@ def infer_authors(input_data: str) -> List[str]:
                          Examples:
                          - "https://arxiv.org/abs/2103.00020"
                          - "https://huggingface.co/papers/2103.00020"
-                         - "CLIP: Connecting Text and Images"
+                         - "https://github.com/openai/CLIP"
         
     Returns:
         List[str]: A list of author names as strings, or empty list if no authors found.
@@ -1192,10 +1217,10 @@ with gr.Blocks(title="Research Tracker MCP Server") as demo:
     with gr.Row():
         with gr.Column():
             input_text = gr.Textbox(
-                label="Demo Input (Paper URL, Repository, or Research Name)",
+                label="Demo Input",
                 placeholder="https://arxiv.org/abs/2506.18787",
                 lines=2,
-                info="Try: arXiv URLs, HuggingFace paper URLs, GitHub repos, or research titles"
+                info="Paper URL, repository URL, or project page"
             )
             submit_btn = gr.Button("🔍 Demonstrate find_research_relationships", variant="primary")
     
