@@ -201,9 +201,109 @@ def cached_request(url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[request
 def get_arxiv_id(paper_url: str) -> Optional[str]:
     """Extract arXiv ID from paper URL"""
     if "arxiv.org/abs/" in paper_url:
-        return paper_url.split("arxiv.org/abs/")[1]
+        return paper_url.split("arxiv.org/abs/")[1].split('.pdf')[0]
+    elif "arxiv.org/pdf/" in paper_url:
+        return paper_url.split("arxiv.org/pdf/")[1].split('.pdf')[0]
     elif "huggingface.co/papers" in paper_url:
         return paper_url.split("huggingface.co/papers/")[1]
+    return None
+
+
+def clean_url(url):
+    """Clean malformed URLs by removing trailing HTML fragments and invalid characters"""
+    if not url:
+        return url
+    
+    # Remove HTML closing tags and attributes that often get attached
+    import re
+    
+    # Remove anything after quote marks followed by HTML-like content
+    url = re.sub(r'["\']\s*>.*$', '', url)
+    
+    # Remove trailing HTML fragments
+    url = re.sub(r'["\']?\s*</.*$', '', url)
+    
+    # Remove trailing punctuation and whitespace
+    url = url.rstrip('",;\'"()<>[] \t\n\r')
+    
+    # Basic URL validation - should start with http/https and contain valid characters
+    if not re.match(r'^https?://[^\s<>"\'\[\]{}|\\^`]+$', url):
+        return None
+    
+    return url
+
+
+def is_valid_paper_url(url):
+    """Check if a URL is a valid paper URL, excluding badges and non-paper content"""
+    if not url:
+        return False
+    
+    url_lower = url.lower()
+    
+    # Exclude badges, shields, and other non-paper URLs
+    if any(pattern in url_lower for pattern in [
+        'img.shields.io', 'badge', 'logo', 'icon', 'button',
+        'github.com/microsoft/trellis/issues', '/releases/', '/actions/',
+        '/wiki/', '/tree/', '/blob/', '.svg', '.png', '.jpg', '.gif'
+    ]):
+        return False
+    
+    # Valid paper URL patterns
+    if any(pattern in url_lower for pattern in [
+        'arxiv.org/abs/', 'arxiv.org/pdf/', 'huggingface.co/papers/'
+    ]):
+        return True
+    
+    return False
+
+
+def select_best_github_repo(github_links, context_keywords=None):
+    """Select the best GitHub repository from a list of GitHub URLs"""
+    if not github_links:
+        return None
+    
+    if context_keywords is None:
+        context_keywords = []
+    
+    # Score repositories based on various factors
+    scored_repos = []
+    
+    for link in github_links:
+        if not link:
+            continue
+            
+        score = 0
+        link_lower = link.lower()
+        
+        # Skip user profiles (github.com/username without repo)
+        path_parts = link.split('github.com/')[-1].split('/')
+        if len(path_parts) < 2 or not path_parts[1]:
+            continue  # Skip user profiles
+        
+        # Skip issue/PR/wiki pages - prefer main repo
+        if any(x in link_lower for x in ['/issues', '/pull', '/wiki', '/releases', '/actions']):
+            score -= 10
+        
+        # Prefer repositories that match context keywords
+        for keyword in context_keywords:
+            if keyword.lower() in link_lower:
+                score += 20
+        
+        # Prefer Microsoft/official org repos if in a Microsoft context
+        if 'microsoft' in link_lower and any(k.lower() in link_lower for k in context_keywords):
+            score += 15
+        
+        # Prefer main branch/root repo URLs
+        if link_lower.endswith('.git') or '/tree/' not in link_lower:
+            score += 5
+        
+        scored_repos.append((score, link))
+    
+    if scored_repos:
+        # Return the highest scored repository
+        scored_repos.sort(key=lambda x: x[0], reverse=True)
+        return scored_repos[0][1]
+    
     return None
 
 
@@ -217,9 +317,10 @@ def extract_links_from_soup(soup, text):
     url_pattern = re.compile(r'https?://[^\s\)]+')
     direct_urls = url_pattern.findall(text)
     
-    # Combine all links and remove duplicates
+    # Combine all links, clean them, and remove duplicates
     all_links = html_links + markdown_links + direct_urls
-    return list(set(all_links))
+    cleaned_links = [clean_url(link) for link in all_links if link]
+    return list(set([link for link in cleaned_links if link]))
 
 
 def scrape_huggingface_paper_page(paper_url: str) -> Dict[str, Any]:
@@ -370,7 +471,7 @@ def infer_paper_from_row(row_data: Dict[str, Any]) -> Optional[str]:
                 soup = BeautifulSoup(response.text, "html.parser")
             for link in soup.find_all("a"):
                 href = link.get("href")
-                if href and ("arxiv" in href or "huggingface.co/papers" in href):
+                if href and is_valid_paper_url(href):
                     logger.info(f"Paper {href} inferred from Project")
                     return href
         except (ValidationError, ExternalAPIError) as e:
@@ -392,7 +493,7 @@ def infer_paper_from_row(row_data: Dict[str, Any]) -> Optional[str]:
                             soup = BeautifulSoup(response.text, "html.parser")
                             links = extract_links_from_soup(soup, response.text)
                             for link in links:
-                                if link and ("arxiv" in link or "huggingface.co/papers" in link):
+                                if link and is_valid_paper_url(link):
                                     logger.info(f"Paper {link} inferred from Code (via GitHub API)")
                                     return link
             
@@ -404,7 +505,7 @@ def infer_paper_from_row(row_data: Dict[str, Any]) -> Optional[str]:
                     soup = BeautifulSoup(response.text, "html.parser")
                     links = extract_links_from_soup(soup, response.text)
                     for link in links:
-                        if link and ("arxiv" in link or "huggingface.co/papers" in link):
+                        if link and is_valid_paper_url(link):
                             logger.info(f"Paper {link} inferred from Code (via GitHub scraping)")
                             return link
             except (ValidationError, ExternalAPIError):
@@ -489,15 +590,32 @@ def infer_code_from_row(row_data: Dict[str, Any]) -> Optional[str]:
             r = requests.get(row_data["Project"], timeout=REQUEST_TIMEOUT)
             soup = BeautifulSoup(r.text, "html.parser")
             links = extract_links_from_soup(soup, r.text)
+            
+            # Filter GitHub links
+            github_links = []
             for link in links:
                 if link:
                     try:
                         url = urlparse(link)
                         if url.scheme in ["http", "https"] and "github.com" in url.netloc:
-                            logger.info(f"Code {link} inferred from Project")
-                            return link
+                            github_links.append(link)
                     except Exception:
                         pass
+            
+            if github_links:
+                # Extract context keywords from the project page
+                context_keywords = []
+                if soup.title:
+                    context_keywords.extend(soup.title.get_text().split())
+                
+                # Use URL parts as context
+                project_url_parts = row_data["Project"].split('/')
+                context_keywords.extend([part for part in project_url_parts if part and len(part) > 2])
+                
+                best_repo = select_best_github_repo(github_links, context_keywords)
+                if best_repo:
+                    logger.info(f"Code {best_repo} inferred from Project")
+                    return best_repo
         except Exception:
             pass
 
@@ -1020,11 +1138,105 @@ def infer_license(input_data: str) -> str:
         return ""
 
 
+def discover_all_urls(input_data: str) -> Dict[str, Any]:
+    """
+    Discover ALL related URLs from the input by building a complete resource graph.
+    This performs multiple rounds of discovery to find all interconnected resources.
+    """
+    discovered = {
+        "paper": None,
+        "code": None, 
+        "project": None,
+        "model": None,
+        "dataset": None,
+        "space": None,
+        "hf_resources": None
+    }
+    
+    # Initialize with input
+    row_data = create_row_data(input_data.strip())
+    
+    # Round 1: Direct inferences from input
+    if row_data.get("Paper"):
+        discovered["paper"] = row_data["Paper"]
+    if row_data.get("Code"):
+        discovered["code"] = row_data["Code"]
+    if row_data.get("Project"):
+        discovered["project"] = row_data["Project"]
+    if row_data.get("Model"):
+        discovered["model"] = row_data["Model"]
+    if row_data.get("Dataset"):
+        discovered["dataset"] = row_data["Dataset"]
+    if row_data.get("Space"):
+        discovered["space"] = row_data["Space"]
+    
+    # Round 2: Cross-inferences - keep discovering until no new URLs found
+    max_rounds = 3
+    for round_num in range(max_rounds):
+        found_new = False
+        
+        # Try to find paper from code if we have code but no paper
+        if discovered["code"] and not discovered["paper"]:
+            temp_row = {"Code": discovered["code"], "Paper": None, "Project": discovered["project"]}
+            paper = infer_paper_from_row(temp_row)
+            if paper and paper != discovered["paper"]:
+                discovered["paper"] = paper
+                found_new = True
+        
+        # Try to find code from paper if we have paper but no code
+        if discovered["paper"] and not discovered["code"]:
+            temp_row = {"Paper": discovered["paper"], "Code": None, "Project": discovered["project"]}
+            code = infer_code_from_row(temp_row)
+            if code and code != discovered["code"]:
+                discovered["code"] = code
+                found_new = True
+        
+        # Try to find code from project if we have project but no code
+        if discovered["project"] and not discovered["code"]:
+            temp_row = {"Project": discovered["project"], "Code": None, "Paper": discovered["paper"]}
+            code = infer_code_from_row(temp_row)
+            if code and code != discovered["code"]:
+                discovered["code"] = code
+                found_new = True
+        
+        # Scrape HuggingFace paper page for additional resources
+        if discovered["paper"] and not discovered["hf_resources"]:
+            arxiv_id = get_arxiv_id(discovered["paper"])
+            if "huggingface.co/papers" in discovered["paper"]:
+                discovered["hf_resources"] = scrape_huggingface_paper_page(discovered["paper"])
+                found_new = True
+            elif arxiv_id:
+                hf_paper_url = f"https://huggingface.co/papers/{arxiv_id}"
+                discovered["hf_resources"] = scrape_huggingface_paper_page(hf_paper_url)
+                if discovered["hf_resources"] and any(discovered["hf_resources"].values()):
+                    found_new = True
+        
+        # Extract additional resources from HF scraping
+        if discovered["hf_resources"]:
+            if not discovered["model"] and discovered["hf_resources"]["models"]:
+                discovered["model"] = discovered["hf_resources"]["models"][0]
+                found_new = True
+            if not discovered["dataset"] and discovered["hf_resources"]["datasets"]:
+                discovered["dataset"] = discovered["hf_resources"]["datasets"][0]
+                found_new = True
+            if not discovered["space"] and discovered["hf_resources"]["spaces"]:
+                discovered["space"] = discovered["hf_resources"]["spaces"][0]
+                found_new = True
+            if not discovered["code"] and discovered["hf_resources"]["code"]:
+                discovered["code"] = discovered["hf_resources"]["code"][0]
+                found_new = True
+        
+        if not found_new:
+            break
+    
+    return discovered
+
+
 @rate_limit("mcp_tools")
 def find_research_relationships(input_data: str) -> Dict[str, Any]:
     """
     Find ALL related research resources across platforms for comprehensive analysis.
-    Optimized version that scrapes once and uses cached results for all inferences.
+    Uses a multi-round discovery approach to build a complete resource graph.
     
     This is a comprehensive tool that combines all individual inference tools to provide
     a complete picture of a research project's ecosystem. It discovers:
@@ -1063,85 +1275,70 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
             "total_inferences": 10
         }
         
-        # Create row data and get paper URL first
-        row_data = create_row_data(cleaned_input)
-        paper_url = infer_paper_from_row(row_data)
-        if paper_url:
-            relationships["paper"] = paper_url
+        # Phase 1: Discover all URLs by building complete resource graph
+        discovered_urls = discover_all_urls(cleaned_input)
+        
+        # Phase 2: Create comprehensive row data with all discovered URLs
+        complete_row_data = {
+            "Name": None,
+            "Authors": [],
+            "Paper": discovered_urls["paper"],
+            "Code": discovered_urls["code"],
+            "Project": discovered_urls["project"],
+            "Space": discovered_urls["space"],
+            "Model": discovered_urls["model"],
+            "Dataset": discovered_urls["dataset"],
+            "Orgs": [],
+            "License": None,
+            "Date": None,
+        }
+        
+        # Phase 3: Perform all inferences using complete information
+        # Paper
+        if complete_row_data["Paper"]:
+            relationships["paper"] = complete_row_data["Paper"]
             relationships["success_count"] += 1
-            row_data["Paper"] = paper_url  # Update row data with found paper
         
-        # If we have a HuggingFace paper URL, scrape it once for all resources
-        hf_resources = None
-        if paper_url and "huggingface.co/papers" in paper_url:
-            hf_resources = scrape_huggingface_paper_page(paper_url)
-        elif paper_url and "arxiv.org/abs/" in paper_url:
-            # Try HuggingFace version
-            arxiv_id = get_arxiv_id(paper_url)
-            if arxiv_id:
-                hf_paper_url = f"https://huggingface.co/papers/{arxiv_id}"
-                hf_resources = scrape_huggingface_paper_page(hf_paper_url)
-        
-        # Now perform all other inferences efficiently
-        # Code inference
-        code_url = infer_code_from_row(row_data)
-        if not code_url and hf_resources and hf_resources["code"]:
-            code_url = hf_resources["code"][0]
-        if code_url:
-            relationships["code"] = code_url
+        # Code
+        if complete_row_data["Code"]:
+            relationships["code"] = complete_row_data["Code"]
             relationships["success_count"] += 1
-            row_data["Code"] = code_url
         
-        # Name inference
-        name = infer_name_from_row(row_data)
+        # Name inference (try all available sources)
+        name = infer_name_from_row(complete_row_data)
         if name:
             relationships["name"] = name
             relationships["success_count"] += 1
         
         # Authors inference
-        authors = infer_authors_from_row(row_data)
+        authors = infer_authors_from_row(complete_row_data)
         if authors:
             relationships["authors"] = authors
             relationships["success_count"] += 1
         
         # Date inference
-        date = infer_date_from_row(row_data)
+        date = infer_date_from_row(complete_row_data)
         if date:
             relationships["date"] = date
             relationships["success_count"] += 1
         
-        # Model inference (use cached HF resources first)
-        model_url = None
-        if hf_resources and hf_resources["models"]:
-            model_url = hf_resources["models"][0]
-        else:
-            model_url = infer_model_from_row(row_data)
-        if model_url:
-            relationships["model"] = model_url
+        # Model
+        if complete_row_data["Model"]:
+            relationships["model"] = complete_row_data["Model"]
             relationships["success_count"] += 1
         
-        # Dataset inference (use cached HF resources first)
-        dataset_url = None
-        if hf_resources and hf_resources["datasets"]:
-            dataset_url = hf_resources["datasets"][0]
-        else:
-            dataset_url = infer_dataset_from_row(row_data)
-        if dataset_url:
-            relationships["dataset"] = dataset_url
+        # Dataset
+        if complete_row_data["Dataset"]:
+            relationships["dataset"] = complete_row_data["Dataset"]
             relationships["success_count"] += 1
         
-        # Space inference (use cached HF resources first)
-        space_url = None
-        if hf_resources and hf_resources["spaces"]:
-            space_url = hf_resources["spaces"][0]
-        else:
-            space_url = infer_space_from_row(row_data)
-        if space_url:
-            relationships["space"] = space_url
+        # Space
+        if complete_row_data["Space"]:
+            relationships["space"] = complete_row_data["Space"]
             relationships["success_count"] += 1
         
         # License inference
-        license_info = infer_license_from_row(row_data)
+        license_info = infer_license_from_row(complete_row_data)
         if license_info:
             relationships["license"] = license_info
             relationships["success_count"] += 1
