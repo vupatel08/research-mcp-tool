@@ -1235,11 +1235,11 @@ with gr.Blocks(title="Research Tracker MCP Server") as demo:
             
         with gr.Column():
             date_output = gr.Textbox(label="Publication Date", interactive=False)
-            model_output = gr.Textbox(label="HuggingFace Model", interactive=False)
-            dataset_output = gr.Textbox(label="HuggingFace Dataset", interactive=False)
+            model_output = gr.Textbox(label="Hugging Face Model", interactive=False)
+            dataset_output = gr.Textbox(label="Hugging Face Dataset", interactive=False)
             
         with gr.Column():
-            space_output = gr.Textbox(label="HuggingFace Space", interactive=False)
+            space_output = gr.Textbox(label="Hugging Face Space", interactive=False)
             license_output = gr.Textbox(label="License", interactive=False)
             field_type_output = gr.Textbox(label="Field Type", interactive=False)
     
@@ -1260,6 +1260,7 @@ with gr.Blocks(title="Research Tracker MCP Server") as demo:
             ["https://arxiv.org/abs/2506.18787"],
             ["https://huggingface.co/papers/2010.11929"],
             ["https://github.com/facebookresearch/segment-anything"],
+            ["https://microsoft.github.io/TRELLIS/"]
         ],
         inputs=[input_text],
         outputs=[
