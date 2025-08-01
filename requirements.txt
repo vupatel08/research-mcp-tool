@@ -1,2 +1,9 @@
 gradio[mcp]==5.38.2
 requests==2.32.4
+beautifulsoup4==4.13.4
+feedparser==6.0.11
+spacy==3.8.7
+fuzzywuzzy==0.18.0
+huggingface-hub==0.34.1
+# Download spaCy English model - needed for organization inference
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

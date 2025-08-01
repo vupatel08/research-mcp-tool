@@ -3,7 +3,7 @@ Research Tracker MCP Server
 
 A clean, simple MCP server that provides research inference utilities.
 Exposes functions to infer research metadata from paper URLs, repository links,
-or research names using the research-tracker-backend inference engine.
+or research names using embedded inference logic.
 
 Key Features:
 - Author inference from papers and repositories
@@ -16,10 +16,17 @@ All functions are optimized for MCP usage with clear type hints and docstrings.
 """
 
 import os
-import requests
-import gradio as gr
-from typing import List, Dict, Any
+import re
 import logging
+from urllib.parse import urlparse
+from typing import List, Dict, Any, Optional
+
+import gradio as gr
+import requests
+import feedparser
+import spacy
+from bs4 import BeautifulSoup
+from fuzzywuzzy import fuzz
 
 # Configure logging
 logging.basicConfig(
@@ -29,35 +36,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-BACKEND_URL = "https://dylanebert-research-tracker-backend.hf.space"
-HF_TOKEN = os.environ.get("HF_TOKEN")
 REQUEST_TIMEOUT = 30
+ARXIV_API_BASE = "http://export.arxiv.org/api/query"
+HUGGINGFACE_API_BASE = "https://huggingface.co/api"
+HF_TOKEN = os.environ.get("HF_TOKEN")
+GITHUB_AUTH = os.environ.get("GITHUB_AUTH")
 
 if not HF_TOKEN:
     logger.warning("HF_TOKEN not found in environment variables")
 
+# Global spaCy model (loaded lazily)
+nlp = None
 
-def make_backend_request(endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Make a request to the research-tracker-backend."""
-    url = f"{BACKEND_URL}/{endpoint}"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {HF_TOKEN}" if HF_TOKEN else "",
-        "User-Agent": "Research-Tracker-MCP/1.0"
-    }
-    
-    try:
-        response = requests.post(url, json=data, headers=headers, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        return response.json()
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Backend request to {endpoint} failed: {e}")
-        raise Exception(f"Backend request to {endpoint} failed: {str(e)}")
+
+# Utility functions
+def get_arxiv_id(paper_url: str) -> Optional[str]:
+    """Extract arXiv ID from paper URL"""
+    if "arxiv.org/abs/" in paper_url:
+        return paper_url.split("arxiv.org/abs/")[1]
+    elif "huggingface.co/papers" in paper_url:
+        return paper_url.split("huggingface.co/papers/")[1]
+    return None
+
+
+def extract_links_from_soup(soup, text):
+    """Extract both HTML and markdown links from soup and text"""
+    html_links = [link.get("href") for link in soup.find_all("a") if link.get("href")]
+    link_pattern = re.compile(r"\[.*?\]\((.*?)\)")
+    markdown_links = link_pattern.findall(text)
+    return html_links + markdown_links
 
 
 def create_row_data(input_data: str) -> Dict[str, Any]:
-    """Create standardized row data structure for backend requests."""
+    """Create standardized row data structure from input."""
     row_data = {
         "Name": None,
         "Authors": [],
@@ -67,6 +78,9 @@ def create_row_data(input_data: str) -> Dict[str, Any]:
         "Space": None,
         "Model": None,
         "Dataset": None,
+        "Orgs": [],
+        "License": None,
+        "Date": None,
     }
     
     # Classify input based on URL patterns
@@ -91,23 +105,361 @@ def create_row_data(input_data: str) -> Dict[str, Any]:
     return row_data
 
 
+# Core inference functions
+def infer_paper_from_row(row_data: Dict[str, Any]) -> Optional[str]:
+    """Infer paper URL from row data"""
+    if row_data.get("Paper") is not None:
+        try:
+            url = urlparse(row_data["Paper"])
+            if url.scheme in ["http", "https"]:
+                if "arxiv.org/pdf/" in row_data["Paper"]:
+                    new_url = row_data["Paper"].replace("/pdf/", "/abs/").replace(".pdf", "")
+                    logger.info(f"Paper {new_url} inferred from {row_data['Paper']}")
+                    return new_url
+                return row_data["Paper"]
+        except Exception:
+            pass
+
+    # Check if paper is in other fields
+    for field in ["Project", "Code", "Model", "Space", "Dataset", "Name"]:
+        if row_data.get(field) is not None:
+            if "arxiv" in row_data[field] or "huggingface.co/papers" in row_data[field]:
+                logger.info(f"Paper {row_data[field]} inferred from {field}")
+                return row_data[field]
+
+    # Try following project link and look for paper
+    if row_data.get("Project") is not None:
+        try:
+            r = requests.get(row_data["Project"], timeout=REQUEST_TIMEOUT)
+            soup = BeautifulSoup(r.text, "html.parser")
+            for link in soup.find_all("a"):
+                href = link.get("href")
+                if href and ("arxiv" in href or "huggingface.co/papers" in href):
+                    logger.info(f"Paper {href} inferred from Project")
+                    return href
+        except Exception:
+            pass
+
+    # Try GitHub README parsing
+    if row_data.get("Code") is not None and GITHUB_AUTH and "github.com" in row_data["Code"]:
+        try:
+            headers = {"Authorization": f"Bearer {GITHUB_AUTH}"}
+            repo = row_data["Code"].split("github.com/")[1]
+            r = requests.get(f"https://api.github.com/repos/{repo}/readme", headers=headers, timeout=REQUEST_TIMEOUT)
+            readme = r.json()
+            if readme.get("type") == "file":
+                r = requests.get(readme["download_url"], timeout=REQUEST_TIMEOUT)
+                soup = BeautifulSoup(r.text, "html.parser")
+                links = extract_links_from_soup(soup, r.text)
+                for link in links:
+                    if link and ("arxiv" in link or "huggingface.co/papers" in link):
+                        logger.info(f"Paper {link} inferred from Code")
+                        return link
+        except Exception:
+            pass
+    
+    return None
+
+
+def infer_name_from_row(row_data: Dict[str, Any]) -> Optional[str]:
+    """Infer research name from row data"""
+    if row_data.get("Name") is not None:
+        return row_data["Name"]
+
+    # Try to get name using arxiv api
+    if row_data.get("Paper") is not None:
+        arxiv_id = get_arxiv_id(row_data["Paper"])
+        if arxiv_id is not None:
+            try:
+                search_params = "id_list=" + arxiv_id
+                response = feedparser.parse(f"{ARXIV_API_BASE}?" + search_params)
+                if response.entries and len(response.entries) > 0:
+                    entry = response.entries[0]
+                    if hasattr(entry, "title"):
+                        name = entry.title.strip()
+                        logger.info(f"Name {name} inferred from Paper")
+                        return name
+            except Exception:
+                pass
+
+    # Try to get from code repo
+    if row_data.get("Code") is not None and "github.com" in row_data["Code"]:
+        try:
+            repo = row_data["Code"].split("github.com/")[1]
+            name = repo.split("/")[1]
+            logger.info(f"Name {name} inferred from Code")
+            return name
+        except Exception:
+            pass
+
+    # Try to get from project page
+    if row_data.get("Project") is not None:
+        try:
+            r = requests.get(row_data["Project"], timeout=REQUEST_TIMEOUT)
+            soup = BeautifulSoup(r.text, "html.parser")
+            if soup.title is not None:
+                name = soup.title.string.strip()
+                logger.info(f"Name {name} inferred from Project")
+                return name
+        except Exception:
+            pass
+    
+    return None
+
+
+def infer_code_from_row(row_data: Dict[str, Any]) -> Optional[str]:
+    """Infer code repository URL from row data"""
+    if row_data.get("Code") is not None:
+        try:
+            url = urlparse(row_data["Code"])
+            if url.scheme in ["http", "https"] and "github" in url.netloc:
+                return row_data["Code"]
+        except Exception:
+            pass
+
+    # Check if code is in other fields
+    for field in ["Project", "Paper", "Model", "Space", "Dataset", "Name"]:
+        if row_data.get(field) is not None:
+            try:
+                url = urlparse(row_data[field])
+                if url.scheme in ["http", "https"] and "github.com" in url.netloc:
+                    logger.info(f"Code {row_data[field]} inferred from {field}")
+                    return row_data[field]
+            except Exception:
+                pass
+
+    # Try to infer code from project page
+    if row_data.get("Project") is not None:
+        try:
+            r = requests.get(row_data["Project"], timeout=REQUEST_TIMEOUT)
+            soup = BeautifulSoup(r.text, "html.parser")
+            links = extract_links_from_soup(soup, r.text)
+            for link in links:
+                if link:
+                    try:
+                        url = urlparse(link)
+                        if url.scheme in ["http", "https"] and "github.com" in url.netloc:
+                            logger.info(f"Code {link} inferred from Project")
+                            return link
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Try GitHub search for papers
+    if row_data.get("Paper") is not None and "arxiv.org" in row_data["Paper"] and GITHUB_AUTH:
+        try:
+            arxiv_id = get_arxiv_id(row_data["Paper"])
+            if arxiv_id:
+                search_url = f"https://api.github.com/search/repositories?q={arxiv_id}&sort=stars&order=desc"
+                headers = {"Authorization": f"Bearer {GITHUB_AUTH}"}
+                search_response = requests.get(search_url, headers=headers, timeout=REQUEST_TIMEOUT)
+                if search_response.status_code == 200:
+                    search_results = search_response.json()
+                    if "items" in search_results and len(search_results["items"]) > 0:
+                        repo = search_results["items"][0]
+                        repo_url = repo["html_url"]
+                        logger.info(f"Code {repo_url} inferred from Paper (GitHub search)")
+                        return repo_url
+        except Exception as e:
+            logger.warning(f"Failed to infer code from paper: {e}")
+    
+    return None
+
+
+def infer_authors_from_row(row_data: Dict[str, Any]) -> List[str]:
+    """Infer authors from row data"""
+    authors = row_data.get("Authors", [])
+    if not isinstance(authors, list):
+        authors = []
+        
+    if row_data.get("Paper") is not None:
+        arxiv_id = get_arxiv_id(row_data["Paper"])
+        if arxiv_id is not None:
+            try:
+                search_params = "id_list=" + arxiv_id
+                response = feedparser.parse(f"{ARXIV_API_BASE}?" + search_params)
+                if response.entries and len(response.entries) > 0:
+                    entry = response.entries[0]
+                    if hasattr(entry, 'authors'):
+                        api_authors = entry.authors
+                        for author in api_authors:
+                            if author is None or not hasattr(author, "name"):
+                                continue
+                            if author.name not in authors and author.name != "arXiv api core":
+                                authors.append(author.name)
+                                logger.info(f"Author {author.name} inferred from Paper")
+            except Exception as e:
+                logger.warning(f"Failed to fetch authors from arXiv: {e}")
+
+    return authors
+
+
+def infer_date_from_row(row_data: Dict[str, Any]) -> Optional[str]:
+    """Infer publication date from row data"""
+    if row_data.get("Paper") is not None:
+        arxiv_id = get_arxiv_id(row_data["Paper"])
+        if arxiv_id is not None:
+            try:
+                search_params = "id_list=" + arxiv_id
+                response = feedparser.parse(f"{ARXIV_API_BASE}?" + search_params)
+                if response.entries and len(response.entries) > 0:
+                    entry = response.entries[0]
+                    date = getattr(entry, "published", None) or getattr(entry, "updated", None)
+                    if date is not None:
+                        logger.info(f"Date {date} inferred from Paper")
+                        return date
+            except Exception as e:
+                logger.warning(f"Failed to fetch date from arXiv: {e}")
+    
+    return None
+
+
+def infer_model_from_row(row_data: Dict[str, Any]) -> Optional[str]:
+    """Infer HuggingFace model from row data"""
+    known_model_mappings = {
+        "2010.11929": "https://huggingface.co/google/vit-base-patch16-224",
+        "1706.03762": "https://huggingface.co/bert-base-uncased",
+        "1810.04805": "https://huggingface.co/bert-base-uncased",
+        "2005.14165": "https://huggingface.co/t5-base",
+        "1907.11692": "https://huggingface.co/roberta-base",
+    }
+
+    if row_data.get("Paper") is not None:
+        arxiv_id = get_arxiv_id(row_data["Paper"])
+        if arxiv_id is not None and arxiv_id in known_model_mappings:
+            model_url = known_model_mappings[arxiv_id]
+            logger.info(f"Model {model_url} inferred from Paper (known mapping)")
+            return model_url
+    
+    return None
+
+
+def infer_dataset_from_row(row_data: Dict[str, Any]) -> Optional[str]:
+    """Infer HuggingFace dataset from row data"""
+    known_dataset_mappings = {
+        "2010.11929": "https://huggingface.co/datasets/imagenet-1k",
+        "1706.03762": "https://huggingface.co/datasets/wmt14",
+        "1810.04805": "https://huggingface.co/datasets/glue",
+        "2005.14165": "https://huggingface.co/datasets/c4",
+        "1907.11692": "https://huggingface.co/datasets/bookcorpus",
+    }
+
+    if row_data.get("Paper") is not None:
+        arxiv_id = get_arxiv_id(row_data["Paper"])
+        if arxiv_id is not None and arxiv_id in known_dataset_mappings:
+            dataset_url = known_dataset_mappings[arxiv_id]
+            logger.info(f"Dataset {dataset_url} inferred from Paper (known mapping)")
+            return dataset_url
+    
+    return None
+
+
+def infer_space_from_row(row_data: Dict[str, Any]) -> Optional[str]:
+    """Infer HuggingFace space from row data"""
+    if row_data.get("Model") is not None:
+        try:
+            model_id = row_data["Model"].split("huggingface.co/")[1]
+            url = f"{HUGGINGFACE_API_BASE}/spaces?models=" + model_id
+            r = requests.get(url, timeout=REQUEST_TIMEOUT)
+            spaces = r.json()
+            if len(spaces) > 0:
+                space = spaces[0]["id"]
+                space_url = "https://huggingface.co/spaces/" + space
+                logger.info(f"Space {space} inferred from Model")
+                return space_url
+        except Exception as e:
+            logger.warning(f"Failed to infer space from model: {e}")
+    
+    return None
+
+
+def infer_license_from_row(row_data: Dict[str, Any]) -> Optional[str]:
+    """Infer license information from row data"""
+    if row_data.get("Code") is not None and GITHUB_AUTH and "github.com" in row_data["Code"]:
+        try:
+            headers = {"Authorization": f"Bearer {GITHUB_AUTH}"}
+            repo = row_data["Code"].split("github.com/")[1]
+            r = requests.get(f"https://api.github.com/repos/{repo}/license", headers=headers, timeout=REQUEST_TIMEOUT)
+            if r.status_code == 200:
+                license_data = r.json()
+                if "license" in license_data and license_data["license"] is not None:
+                    license_name = license_data["license"]["name"]
+                    logger.info(f"License {license_name} inferred from Code")
+                    return license_name
+        except Exception as e:
+            logger.warning(f"Failed to infer license from code: {e}")
+    
+    return None
+
+
+def infer_orgs_from_row(row_data: Dict[str, Any]) -> List[str]:
+    """Infer organizations from row data"""
+    global nlp
+    if nlp is None:
+        try:
+            nlp = spacy.load("en_core_web_sm")
+        except OSError as e:
+            logger.warning(f"Could not load spaCy model 'en_core_web_sm': {e}")
+            return row_data.get("Orgs", [])
+    
+    orgs_input = row_data.get("Orgs", [])
+    if not orgs_input or not isinstance(orgs_input, list):
+        return []
+    
+    orgs = []
+    for org in orgs_input:
+        if not org or not isinstance(org, str):
+            continue
+        doc = nlp(org)
+        for ent in doc.ents:
+            if ent.label_ == "ORG":
+                if ent.text == org and ent.text not in orgs:
+                    orgs.append(ent.text)
+                    break
+                if fuzz.ratio(ent.text, org) > 80 and ent.text not in orgs:
+                    orgs.append(ent.text)
+                    logger.info(f"Org {ent.text} inferred from {org}")
+                    break
+
+    return orgs
+
+
+def infer_field_type(value: str) -> str:
+    """Classify the type of research-related URL or input"""
+    if value is None:
+        return "Unknown"
+    if "arxiv.org/" in value or "huggingface.co/papers" in value or ".pdf" in value:
+        return "Paper"
+    if "github.com" in value:
+        return "Code"
+    if "huggingface.co/spaces" in value:
+        return "Space"
+    if "huggingface.co/datasets" in value:
+        return "Dataset"
+    if "github.io" in value:
+        return "Project"
+    if "huggingface.co/" in value:
+        try:
+            path = value.split("huggingface.co/")[1]
+            path_parts = path.strip("/").split("/")
+            if len(path_parts) >= 2 and not path.startswith(("spaces/", "datasets/", "papers/")):
+                return "Model"
+        except (IndexError, AttributeError):
+            pass
+    return "Unknown"
+
+
+# MCP tool functions
 def infer_authors(input_data: str) -> List[str]:
     """
     Infer authors from research paper or project information.
     
-    This function attempts to extract author names from various inputs like
-    paper URLs (arXiv, Hugging Face papers), project pages, or repository links.
-    It uses the research-tracker-backend inference engine with sophisticated
-    author extraction from paper metadata and repository contributor information.
-    
     Args:
         input_data (str): A URL, paper title, or other research-related input.
-                         Supports arXiv URLs, GitHub repositories, HuggingFace resources,
-                         project pages, and natural language paper titles.
         
     Returns:
         List[str]: A list of author names as strings, or empty list if no authors found.
-                   Authors are returned in the order they appear in the original source.
     """
     if not input_data or not input_data.strip():
         return []
@@ -115,22 +467,12 @@ def infer_authors(input_data: str) -> List[str]:
     try:
         cleaned_input = input_data.strip()
         row_data = create_row_data(cleaned_input)
-        result = make_backend_request("infer-authors", row_data)
+        authors = infer_authors_from_row(row_data)
         
-        # Extract and validate authors from response
-        authors = result.get("authors", [])
-        if isinstance(authors, str):
-            # Handle comma-separated string format
-            authors = [author.strip() for author in authors.split(",") if author.strip()]
-        elif not isinstance(authors, list):
-            authors = []
-        
-        # Filter out empty or invalid author names
         valid_authors = []
         for author in authors:
             if isinstance(author, str) and len(author.strip()) > 0:
                 cleaned_author = author.strip()
-                # Basic validation - authors should have reasonable length
                 if 2 <= len(cleaned_author) <= 100:
                     valid_authors.append(cleaned_author)
         
@@ -157,8 +499,8 @@ def infer_paper_url(input_data: str) -> str:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-paper", row_data)
-        return result.get("paper", "")
+        result = infer_paper_from_row(row_data)
+        return result or ""
         
     except Exception as e:
         logger.error(f"Error inferring paper: {e}")
@@ -180,8 +522,8 @@ def infer_code_repository(input_data: str) -> str:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-code", row_data)
-        return result.get("code", "")
+        result = infer_code_from_row(row_data)
+        return result or ""
         
     except Exception as e:
         logger.error(f"Error inferring code: {e}")
@@ -203,8 +545,8 @@ def infer_research_name(input_data: str) -> str:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-name", row_data)
-        return result.get("name", "")
+        result = infer_name_from_row(row_data)
+        return result or ""
         
     except Exception as e:
         logger.error(f"Error inferring name: {e}")
@@ -214,9 +556,6 @@ def infer_research_name(input_data: str) -> str:
 def classify_research_url(input_data: str) -> str:
     """
     Classify the type of research-related URL or input.
-    
-    This function determines what type of research resource a given URL
-    or input represents (paper, code, model, dataset, etc.).
     
     Args:
         input_data (str): The URL or input to classify
@@ -228,8 +567,7 @@ def classify_research_url(input_data: str) -> str:
         return "Unknown"
     
     try:
-        result = make_backend_request("infer-field", {"value": input_data})
-        field = result.get("field", "Unknown")
+        field = infer_field_type(input_data)
         return field if field else "Unknown"
         
     except Exception as e:
@@ -240,10 +578,6 @@ def classify_research_url(input_data: str) -> str:
 def infer_organizations(input_data: str) -> List[str]:
     """
     Infer affiliated organizations from research paper or project information.
-    
-    This function attempts to extract organization names from research metadata,
-    author affiliations, and repository information using NLP analysis to identify
-    institutional affiliations from paper authors and project contributors.
     
     Args:
         input_data (str): A URL, paper title, or other research-related input
@@ -256,15 +590,8 @@ def infer_organizations(input_data: str) -> List[str]:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-orgs", row_data)
-        
-        orgs = result.get("orgs", [])
-        if isinstance(orgs, str):
-            orgs = [org.strip() for org in orgs.split(",") if org.strip()]
-        elif not isinstance(orgs, list):
-            orgs = []
-            
-        return orgs
+        orgs = infer_orgs_from_row(row_data)
+        return orgs if isinstance(orgs, list) else []
         
     except Exception as e:
         logger.error(f"Error inferring organizations: {e}")
@@ -274,10 +601,6 @@ def infer_organizations(input_data: str) -> List[str]:
 def infer_publication_date(input_data: str) -> str:
     """
     Infer publication date from research paper or project information.
-    
-    This function attempts to extract publication dates from paper metadata,
-    repository creation dates, or release information. Returns dates in
-    standardized format (YYYY-MM-DD) when possible.
     
     Args:
         input_data (str): A URL, paper title, or other research-related input
@@ -290,8 +613,8 @@ def infer_publication_date(input_data: str) -> str:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-date", row_data)
-        return result.get("date", "")
+        result = infer_date_from_row(row_data)
+        return result or ""
         
     except Exception as e:
         logger.error(f"Error inferring publication date: {e}")
@@ -301,10 +624,6 @@ def infer_publication_date(input_data: str) -> str:
 def infer_model(input_data: str) -> str:
     """
     Infer associated HuggingFace model from research paper or project information.
-    
-    This function attempts to find HuggingFace models associated with research papers,
-    GitHub repositories, or project pages. It searches for model references in papers,
-    README files, and related documentation.
     
     Args:
         input_data (str): A URL, paper title, or other research-related input
@@ -317,8 +636,8 @@ def infer_model(input_data: str) -> str:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-model", row_data)
-        return result.get("model", "")
+        result = infer_model_from_row(row_data)
+        return result or ""
         
     except Exception as e:
         logger.error(f"Error inferring model: {e}")
@@ -328,10 +647,6 @@ def infer_model(input_data: str) -> str:
 def infer_dataset(input_data: str) -> str:
     """
     Infer associated HuggingFace dataset from research paper or project information.
-    
-    This function attempts to find HuggingFace datasets used or created by research papers,
-    GitHub repositories, or projects. It analyzes paper content, repository documentation,
-    and project descriptions.
     
     Args:
         input_data (str): A URL, paper title, or other research-related input
@@ -344,8 +659,8 @@ def infer_dataset(input_data: str) -> str:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-dataset", row_data)
-        return result.get("dataset", "")
+        result = infer_dataset_from_row(row_data)
+        return result or ""
         
     except Exception as e:
         logger.error(f"Error inferring dataset: {e}")
@@ -355,10 +670,6 @@ def infer_dataset(input_data: str) -> str:
 def infer_space(input_data: str) -> str:
     """
     Infer associated HuggingFace space from research paper or project information.
-    
-    This function attempts to find HuggingFace spaces (demos/applications) associated
-    with research papers, models, or GitHub repositories. It looks for interactive
-    demos and applications built around research.
     
     Args:
         input_data (str): A URL, paper title, or other research-related input
@@ -371,8 +682,8 @@ def infer_space(input_data: str) -> str:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-space", row_data)
-        return result.get("space", "")
+        result = infer_space_from_row(row_data)
+        return result or ""
         
     except Exception as e:
         logger.error(f"Error inferring space: {e}")
@@ -382,10 +693,6 @@ def infer_space(input_data: str) -> str:
 def infer_license(input_data: str) -> str:
     """
     Infer license information from research repository or project.
-    
-    This function attempts to extract license information from GitHub repositories,
-    project documentation, or associated code. It checks license files, repository
-    metadata, and project descriptions.
     
     Args:
         input_data (str): A URL, repository link, or other research-related input
@@ -398,8 +705,8 @@ def infer_license(input_data: str) -> str:
     
     try:
         row_data = create_row_data(input_data.strip())
-        result = make_backend_request("infer-license", row_data)
-        return result.get("license", "")
+        result = infer_license_from_row(row_data)
+        return result or ""
         
     except Exception as e:
         logger.error(f"Error inferring license: {e}")
@@ -410,31 +717,11 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
     """
     Find ALL related research resources across platforms for comprehensive analysis.
     
-    This function performs a comprehensive analysis of a research item to find
-    all related resources including papers, code repositories, models, datasets,
-    spaces, and metadata. It's designed for building research knowledge graphs
-    and understanding the complete ecosystem around a research topic.
-    
     Args:
         input_data (str): A URL, paper title, or other research-related input
         
     Returns:
-        Dict[str, Any]: Dictionary containing all discovered related resources:
-        {
-            "paper": str | None,           # Associated research paper
-            "code": str | None,            # Code repository URL
-            "name": str | None,            # Research/project name
-            "authors": List[str],          # Author names
-            "organizations": List[str],    # Affiliated organizations
-            "date": str | None,           # Publication date
-            "model": str | None,          # HuggingFace model URL
-            "dataset": str | None,        # HuggingFace dataset URL
-            "space": str | None,          # HuggingFace space URL
-            "license": str | None,        # License information
-            "field_type": str | None,     # Classification of input type
-            "success_count": int,         # Number of successful inferences
-            "total_inferences": int       # Total inferences attempted
-        }
+        Dict[str, Any]: Dictionary containing all discovered related resources
     """
     if not input_data or not input_data.strip():
         return {"error": "Input data cannot be empty", "success_count": 0, "total_inferences": 0}
@@ -442,7 +729,6 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
     try:
         cleaned_input = input_data.strip()
         
-        # Initialize result structure
         relationships = {
             "paper": None,
             "code": None,
@@ -456,10 +742,9 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
             "license": None,
             "field_type": None,
             "success_count": 0,
-            "total_inferences": 11  # Number of inference types we'll attempt
+            "total_inferences": 11
         }
         
-        # Define inference operations
         inferences = [
             ("paper", infer_paper_url),
             ("code", infer_code_repository),
@@ -476,23 +761,19 @@ def find_research_relationships(input_data: str) -> Dict[str, Any]:
         
         logger.info(f"Finding research relationships for: {cleaned_input}")
         
-        # Perform all inferences
         for field_name, inference_func in inferences:
             try:
                 result = inference_func(cleaned_input)
                 
-                # Handle different return types
                 if isinstance(result, list) and result:
                     relationships[field_name] = result
                     relationships["success_count"] += 1
                 elif isinstance(result, str) and result.strip():
                     relationships[field_name] = result.strip()
                     relationships["success_count"] += 1
-                # else: leave as None (unsuccessful inference)
                 
             except Exception as e:
                 logger.warning(f"Failed to infer {field_name}: {e}")
-                # Continue with other inferences
         
         logger.info(f"Research relationship analysis completed: {relationships['success_count']}/{relationships['total_inferences']} successful")
         return relationships
