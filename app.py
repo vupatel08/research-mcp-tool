@@ -161,9 +161,14 @@ def cached_request(url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[request
     # Check cache
     if url in _scrape_cache:
         cache_entry = _scrape_cache[url]
-        if time.time() - cache_entry["timestamp"] < CACHE_TTL:
-            logger.debug(f"Cache hit for {url}")
-            return cache_entry["data"]
+        # Handle both old and new cache formats
+        if isinstance(cache_entry, dict) and "timestamp" in cache_entry:
+            if time.time() - cache_entry["timestamp"] < CACHE_TTL:
+                logger.debug(f"Cache hit for {url}")
+                return cache_entry["data"]
+        else:
+            # Old cache format, clear it
+            del _scrape_cache[url]
     
     # Make request with retries
     for attempt in range(MAX_RETRIES):
