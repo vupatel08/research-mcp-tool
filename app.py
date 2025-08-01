@@ -1194,14 +1194,6 @@ with gr.Blocks(title="Research Tracker MCP Server") as demo:
             )
             submit_btn = gr.Button("🔍 Demonstrate find_research_relationships", variant="primary")
     
-    gr.Markdown("### Example Inputs:")
-    gr.Markdown("""
-    - `https://arxiv.org/abs/2506.18787` (3D Arena paper)
-    - `https://huggingface.co/papers/2010.11929` (Vision Transformer)  
-    - `https://github.com/facebookresearch/segment-anything` (SAM repository)
-    - `Attention Is All You Need` (paper title)
-    """)
-    
     gr.Markdown("## Research Relationships")
     
     with gr.Row():
@@ -1221,7 +1213,7 @@ with gr.Blocks(title="Research Tracker MCP Server") as demo:
             license_output = gr.Textbox(label="License", interactive=False)
             field_type_output = gr.Textbox(label="Field Type", interactive=False)
     
-    # Connect the interface
+    # Connect the interface with examples
     submit_btn.click(
         fn=process_research_relationships,
         inputs=[input_text],
@@ -1230,6 +1222,25 @@ with gr.Blocks(title="Research Tracker MCP Server") as demo:
             date_output, model_output, dataset_output,
             space_output, license_output, field_type_output
         ]
+    )
+    
+    # Add examples using Gradio's built-in system
+    gr.Examples(
+        examples=[
+            ["https://arxiv.org/abs/2506.18787"],
+            ["https://huggingface.co/papers/2010.11929"],
+            ["https://github.com/facebookresearch/segment-anything"],
+            ["Attention Is All You Need"]
+        ],
+        inputs=[input_text],
+        outputs=[
+            paper_output, code_output, name_output, authors_output, 
+            date_output, model_output, dataset_output,
+            space_output, license_output, field_type_output
+        ],
+        fn=process_research_relationships,
+        cache_examples=False,
+        label="Example Inputs"
     )
     
     # Also trigger on Enter key
