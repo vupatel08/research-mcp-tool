@@ -15,6 +15,25 @@ A Model Context Protocol (MCP) server that provides research inference utilities
 - Security validation for all URLs
 - Retry logic with exponential backoff
 
+## Frontend
+
+The project includes a modern web interface built with Flask and vanilla JavaScript:
+
+- **Clean Design**: Minimalist black and white theme with soft green accents
+- **Real-time Discovery**: Live logging of the discovery process with scrollable output
+- **Responsive Layout**: Grid-based design that adapts to different screen sizes
+- **Interactive Elements**: Example URL buttons for quick testing
+- **Progress Tracking**: Visual progress indicators and status updates
+- **Resource Display**: Organized grid showing discovered papers, code, models, datasets, and demo spaces
+
+### UI Components
+
+- **Input Section**: URL input field with discover button
+- **Discovery Log**: Real-time scrolling log of the discovery process
+- **Results Grid**: Clean display of discovered resources
+- **Example URLs**: Pre-configured test cases for demonstration
+- **Status Indicators**: Progress bars and status messages
+
 ## Available MCP Tools
 
 All functions are optimized for MCP usage with clear type hints and docstrings:
@@ -91,3 +110,33 @@ The server provides clear error messages:
 
 - Python 3.8+
 - See requirements.txt for dependencies
+
+## Running the Application
+
+### MCP Server Only
+```bash
+python app.py
+```
+
+### Web Interface
+```bash
+python flask_app.py
+```
+The web interface will be available at `http://localhost:5000`
+
+### Gradio Interface (Alternative)
+```bash
+python ui.py
+```
+
+## Project Structure
+
+- `app.py` - Main MCP server entry point
+- `flask_app.py` - Flask web interface
+- `ui.py` - Gradio alternative interface
+- `mcp_tools.py` - MCP tool implementations
+- `inference.py` - Core inference logic
+- `discovery.py` - Multi-round discovery functions
+- `static/` - CSS and JavaScript files
+- `templates/` - HTML templates
+- `utils.py` - Utility functions
