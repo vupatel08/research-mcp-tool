@@ -1,30 +1,19 @@
----
-title: Research Tracker MCP
-emoji: 🔬
-colorFrom: red
-colorTo: yellow
-sdk: gradio
-sdk_version: 5.42.0
-app_file: app.py
-pinned: false
----
-
 # Research Tracker MCP Server
 
-A robust, performant MCP (Model Context Protocol) server that provides research inference utilities following MCP best practices. This server extracts research metadata from paper URLs, repository links, or research names using intelligent scraping and API integration.
+A Model Context Protocol (MCP) server that provides research inference utilities. This server extracts research metadata from paper URLs, repository links, or research names using web scraping and API integration.
 
 ## Features
 
-- **Author inference** from papers and repositories
-- **Cross-platform resource discovery** (papers, code, models, datasets)
-- **Research metadata extraction** (names, dates, licenses)
-- **URL classification** and relationship mapping
-- **Comprehensive research ecosystem analysis**
-- **Rate limiting** to prevent API abuse
-- **Request caching** with TTL for performance
-- **Robust error handling** with typed exceptions
-- **Security validation** for all URLs
-- **Retry logic** with exponential backoff
+- Author inference from papers and repositories
+- Cross-platform resource discovery (papers, code, models, datasets)
+- Research metadata extraction (names, dates, licenses)
+- URL classification and relationship mapping
+- Comprehensive research ecosystem analysis
+- Rate limiting to prevent API abuse
+- Request caching with TTL for performance
+- Error handling with typed exceptions
+- Security validation for all URLs
+- Retry logic with exponential backoff
 
 ## Available MCP Tools
 
@@ -35,7 +24,6 @@ All functions are optimized for MCP usage with clear type hints and docstrings:
 - `infer_code_repository` - Discover code repository links
 - `infer_research_name` - Extract research project names
 - `classify_research_url` - Classify URL types (paper/code/model/etc.)
-- `infer_organizations` - Identify affiliated organizations
 - `infer_publication_date` - Extract publication dates
 - `infer_model` - Find associated HuggingFace models
 - `infer_dataset` - Find associated HuggingFace datasets
@@ -46,7 +34,7 @@ All functions are optimized for MCP usage with clear type hints and docstrings:
 ## Input Support
 
 - arXiv paper URLs (https://arxiv.org/abs/...)
-- HuggingFace paper URLs (https://huggingface.co/papers/...) - **Preferred over arXiv for better resource discovery**
+- HuggingFace paper URLs (https://huggingface.co/papers/...)
 - GitHub repository URLs (https://github.com/...)
 - HuggingFace model/dataset/space URLs
 - Research paper titles and project names
@@ -56,11 +44,11 @@ All functions are optimized for MCP usage with clear type hints and docstrings:
 
 This server follows official MCP best practices:
 
-1. **Security**: URL validation, domain allowlisting, input sanitization
-2. **Performance**: Request caching, rate limiting, connection pooling
-3. **Reliability**: Retry logic, graceful error handling, timeout management
-4. **Documentation**: Comprehensive docstrings with examples for all tools
-5. **Error Handling**: Typed exceptions for different failure scenarios
+1. Security: URL validation, domain allowlisting, input sanitization
+2. Performance: Request caching, rate limiting, connection pooling
+3. Reliability: Retry logic, graceful error handling, timeout management
+4. Documentation: Comprehensive docstrings with examples for all tools
+5. Error Handling: Typed exceptions for different failure scenarios
 
 ## Environment Variables
 
@@ -69,7 +57,7 @@ This server follows official MCP best practices:
 
 ## Usage
 
-The server automatically launches as an MCP server when run. All inference functions are exposed as MCP tools for seamless integration with Claude and other AI assistants.
+The server automatically launches as an MCP server when run. All inference functions are exposed as MCP tools for integration with Claude and other AI assistants.
 
 ### Example
 
@@ -91,3 +79,15 @@ The server provides clear error messages:
 - `ValidationError`: Invalid or malicious URLs
 - `ExternalAPIError`: External service failures
 - `MCPError`: Rate limiting or other MCP issues
+
+## Installation
+
+1. Clone the repository
+2. Install dependencies: `pip install -r requirements.txt`
+3. Set environment variables
+4. Run: `python app.py`
+
+## Requirements
+
+- Python 3.8+
+- See requirements.txt for dependencies

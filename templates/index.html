@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Discovery Engine</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Research Discovery Engine</h1>
+        </header>
+
+        <!-- Input Section -->
+        <div class="input-section">
+            <div class="input-group">
+                <input type="text" id="urlInput" placeholder="https://arxiv.org/abs/2506.18787" class="url-input">
+                <button id="discoverBtn" class="discover-btn">Discover</button>
+            </div>
+        </div>
+
+        <!-- Status Indicator -->
+        <div id="statusIndicator" class="status-indicator">
+            <span id="statusText"></span>
+            <div id="progressBar" class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+        </div>
+
+        <!-- Examples Section -->
+        <div class="examples-section">
+            <div class="examples-grid">
+                <button class="example-btn" data-url="https://arxiv.org/abs/2506.18787">
+                    arXiv Paper (3D Arena)
+                </button>
+                <button class="example-btn" data-url="https://huggingface.co/papers/2010.11929">
+                    HuggingFace Paper (Vision Transformer)
+                </button>
+                <button class="example-btn" data-url="https://github.com/facebookresearch/segment-anything">
+                    GitHub Repository (SAM)
+                </button>
+                <button class="example-btn" data-url="https://microsoft.github.io/TRELLIS/">
+                    Project Page (TRELLIS)
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Live Discovery Log -->
+            <div class="discovery-section">
+                <h2>Live Discovery Process</h2>
+                <div id="discoveryLog" class="discovery-log">
+                </div>
+            </div>
+
+            <!-- Results Section -->
+            <div class="results-section">
+                <h2>Discovered Resources</h2>
+                <div class="results-grid">
+                    <div class="result-item" id="paperResult">
+                        <div class="result-label">Paper</div>
+                        <div class="result-content" id="paperContent">-</div>
+                    </div>
+                    <div class="result-item" id="codeResult">
+                        <div class="result-label">Code Repository</div>
+                        <div class="result-content" id="codeContent">-</div>
+                    </div>
+                    <div class="result-item" id="authorsResult">
+                        <div class="result-label">Authors</div>
+                        <div class="result-content" id="authorsContent">-</div>
+                    </div>
+                    <div class="result-item" id="modelResult">
+                        <div class="result-label">Model</div>
+                        <div class="result-content" id="modelContent">-</div>
+                    </div>
+                    <div class="result-item" id="datasetResult">
+                        <div class="result-label">Dataset</div>
+                        <div class="result-content" id="datasetContent">-</div>
+                    </div>
+                    <div class="result-item" id="spaceResult">
+                        <div class="result-label">Demo Space</div>
+                        <div class="result-content" id="spaceContent">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Real-time research discovery powered by advanced inference algorithms</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+
+</html>
